@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - staging
+  workflow_dispatch:
 
 concurrency:
   group: delivery-fe-ec2-deploy
@@ -132,7 +133,8 @@ jobs:
           SSH="ssh -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -i ~/.ssh/id_ed25519 ${EC2_USER}@${EC2_HOST}"
           ready=false
           for i in $(seq 1 40); do
-            if $SSH "curl -sf http://127.0.0.1:3011/ >/dev/null"; then
+            code=$($SSH "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3011/ || true")
+            if echo "$code" | grep -Eq '^(2|3)[0-9][0-9]$'; then
               ready=true
               break
             fi

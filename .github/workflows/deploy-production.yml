@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: delivery-fe-ec2-deploy
+  
   cancel-in-progress: false
 
 jobs:
@@ -99,6 +101,18 @@ jobs:
             if [ ! -x "$BG_SCRIPT" ]; then
               echo "Missing $BG_SCRIPT — sync from GrubAdmin-Backend scripts/ec2/ first"
               exit 1
+            fi
+
+            ACTIVE_PORT="$("$BG_SCRIPT" active-port)"
+            ACTIVE_COLOR="$("$BG_SCRIPT" active-color)"
+            active_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ACTIVE_PORT}/" || true)
+            if ! echo "$active_code" | grep -Eq '^(2|3)[0-9][0-9]$'; then
+              echo "Active Delivery FE ${ACTIVE_COLOR} on :${ACTIVE_PORT} unhealthy (HTTP ${active_code}) — attempting rollback"
+              if "$BG_SCRIPT" rollback; then
+                echo "Rollback restored fe_delivery_prod traffic"
+              else
+                echo "Rollback skipped or failed — continuing blue-green deploy to inactive slot"
+              fi
             fi
 
             INACTIVE_COLOR="$("$BG_SCRIPT" inactive-color)"
