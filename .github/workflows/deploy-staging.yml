@@ -152,6 +152,40 @@ jobs:
             exit 1
           fi
 
+      - name: Post-deploy verification
+        if: steps.slot.outputs.configured == 'true'
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST || secrets.SSH_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          CONTAINER: grub-delivery-frontend-staging
+          PUBLIC_URL: https://staging-delivery.43.204.34.10.nip.io/
+        run: |
+          SSH="ssh -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -i ~/.ssh/id_ed25519 ${EC2_USER}@${EC2_HOST}"
+          healthy=false
+          for i in $(seq 1 20); do
+            status=$($SSH "docker inspect --format='{{.State.Health.Status}}' ${CONTAINER} 2>/dev/null || echo missing")
+            if [ "$status" = "healthy" ]; then
+              healthy=true
+              break
+            fi
+            echo "docker health=${status} (attempt $i)"
+            sleep 15
+          done
+          if [ "$healthy" != "true" ]; then
+            echo "Docker health check failed for ${CONTAINER}"
+            $SSH "docker inspect ${CONTAINER} --format='{{json .State.Health}}'" || true
+            exit 1
+          fi
+          if $SSH "docker exec ${CONTAINER} sh -c 'ps aux 2>/dev/null || ps -ef'" | grep -F '/tmp/dashboard' | grep -v grep >/dev/null; then
+            echo "Suspicious /tmp/dashboard process in ${CONTAINER}"
+            exit 1
+          fi
+          pub_code=$(curl -sk -o /dev/null -w '%{http_code}' "${PUBLIC_URL}" || true)
+          if ! echo "$pub_code" | grep -Eq '^(2|3)[0-9][0-9]$'; then
+            echo "Public URL check failed (${PUBLIC_URL}): HTTP ${pub_code}"
+            exit 1
+          fi
+
       - name: Done
         if: steps.slot.outputs.configured == 'true'
         run: echo "Delivery frontend deployed successfully to staging slot"

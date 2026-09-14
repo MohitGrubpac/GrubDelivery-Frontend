@@ -171,9 +171,44 @@ jobs:
               exit 1
             fi
 
+            docker_healthy=false
+            for i in $(seq 1 20); do
+              status=$(docker inspect --format='{{.State.Health.Status}}' "$INACTIVE_CONTAINER" 2>/dev/null || echo missing)
+              if [ "$status" = "healthy" ]; then
+                docker_healthy=true
+                break
+              fi
+              echo "candidate docker health=${status} (attempt $i)"
+              sleep 15
+            done
+            if [ "$docker_healthy" != "true" ]; then
+              echo "Candidate Docker health check failed for ${INACTIVE_CONTAINER}"
+              docker inspect "$INACTIVE_CONTAINER" --format='{{json .State.Health}}' || true
+              exit 1
+            fi
+            if docker exec "$INACTIVE_CONTAINER" sh -c 'ps aux 2>/dev/null || ps -ef' | grep -F '/tmp/dashboard' | grep -v grep >/dev/null; then
+              echo "Suspicious /tmp/dashboard process in candidate ${INACTIVE_CONTAINER}"
+              exit 1
+            fi
+
             "$BG_SCRIPT" cutover "$INACTIVE_COLOR"
             echo "=== Keep previous slot as warm standby (no stop) ==="
             "$BG_SCRIPT" status
+
+            ACTIVE_CONTAINER="$("$BG_SCRIPT" active-container)"
+            pub_code=$(curl -sk -o /dev/null -w '%{http_code}' 'https://delivery.43.204.34.10.nip.io/' || true)
+            if ! echo "$pub_code" | grep -Eq '^(2|3)[0-9][0-9]$'; then
+              echo "Production public URL check failed: HTTP ${pub_code} — rolling back"
+              if "$BG_SCRIPT" rollback; then
+                echo "Rollback completed after failed public URL check"
+              fi
+              exit 1
+            fi
+            if docker exec "$ACTIVE_CONTAINER" sh -c 'ps aux 2>/dev/null || ps -ef' | grep -F '/tmp/dashboard' | grep -v grep >/dev/null; then
+              echo "Suspicious /tmp/dashboard on active ${ACTIVE_CONTAINER} — rolling back"
+              "$BG_SCRIPT" rollback || true
+              exit 1
+            fi
             echo "=== Delivery FE blue-green deploy complete ==="
           EOF
 
